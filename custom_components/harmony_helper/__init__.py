@@ -110,7 +110,7 @@ async def async_setup(hass, config):
 
             else:
                 helper_command = command[CONF_COMMAND]
-                links = command.get(CONF_LINKS, [])
+                links = command.get(CONF_LINKS, list(activity_device_links.values()))
                 command = Command(
                     helper_command,
                     command.get(CONF_NAME),
@@ -118,13 +118,17 @@ async def async_setup(hass, config):
                     command.get(CONF_ICON),
                 )
                 for link in links:
+                    link_dict = {}
                     if isinstance(link, str):
                         link_key = link
-                        link = {}
-                    else:
+                        activity_device_link = activity_device_links.get(link_key)
+                    elif isinstance(link, dict):
+                        link_dict = link
                         link_key = link.get(CONF_LINK)
+                        activity_device_link = activity_device_links.get(link_key)
+                    else:
+                        activity_device_link = link
 
-                    activity_device_link = activity_device_links.get(link_key)
                     if activity_device_link is None:
                         _LOGGER.warning(
                             "Activity device link '%s' does not exist", link_key
@@ -134,9 +138,9 @@ async def async_setup(hass, config):
                         command.links[activity_device_link.activity] = Link(
                             command,
                             activity_device_link,
-                            link.get(CONF_NAME),
-                            link.get(CONF_DEVICE_COMMAND),
-                            link.get(CONF_ICON),
+                            link_dict.get(CONF_NAME),
+                            link_dict.get(CONF_DEVICE_COMMAND),
+                            link_dict.get(CONF_ICON),
                         )
 
             if helper_command in data:
@@ -248,7 +252,9 @@ class Link(CommandBase):
         """The link icon."""
         ret = self._icon
         if ret is None:
-            ret = self._command.icon
+            ret = DEFAULT_ICONS.get(self.device_command)
+            if ret is None:
+                ret = self._command.icon
         return ret
 
     @property
