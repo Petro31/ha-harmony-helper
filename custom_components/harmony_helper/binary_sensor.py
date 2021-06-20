@@ -92,12 +92,14 @@ async def async_setup_platform(hass, config, async_add_entities, discovery_info=
 
     await async_setup_reload_service(hass, DOMAIN, PLATFORMS)
 
+    source = conf[CONF_SOURCE]
+
     async_add_entities(
         [
             HarmonyHelperBinarySensor(
                 f"{harmony_helper}_{command.command}",
-                f"{harmony_helper} {command.command} Command",
-                conf[CONF_SOURCE],
+                f"{source} {command.command}",
+                source,
                 command,
             )
             for command in commands.values()
