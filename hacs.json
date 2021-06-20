@@ -1,0 +1,8 @@
+{
+    "name": "Harmony Helper",
+    "domains": [
+        "binary_sensor"
+    ],
+    "render_readme": true,
+    "iot_class": ["Local Polling"]
+}

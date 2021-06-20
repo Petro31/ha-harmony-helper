@@ -1,0 +1,8 @@
+{
+    "domain": "harmony_helper",
+    "name": "Harmony Helper",
+    "documentation": "https://github.com/Petro31/ha-harmony-helper",
+    "codeowners": ["@Petro31"],
+    "iot_class": "local_polling",
+    "version": "1.0"
+}

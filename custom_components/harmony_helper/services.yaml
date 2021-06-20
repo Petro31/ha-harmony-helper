@@ -1,0 +1,7 @@
+reload:
+  description: Reload all multizone controller entities.
+
+send_command:
+  name: Send a Command
+  description: Send a harmony command using a binary sensor.
+  target:
