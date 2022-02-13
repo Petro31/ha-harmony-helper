@@ -52,7 +52,7 @@ DEFAULT_ICONS = {
     "SkipForward": "mdi:skip-forward",
     "Menu": "mdi:menu",
     "Subtitle": "mdi:subtitles",
-    "Back": "mdi:arrow-left",
+    "Back": "mdi:undo-variant",
     "Green": "mdi:rectangle",
     "Red": "mdi:rectangle",
     "Blue": "mdi:rectangle",
