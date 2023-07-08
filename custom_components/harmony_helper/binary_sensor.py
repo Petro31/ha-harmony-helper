@@ -172,25 +172,33 @@ class HarmonyHelperBinarySensor(BinarySensorEntity):
         """Return the icon to use in the frontend, if any."""
         return self._link.icon if self._link else self._icon
 
-    def send_command(self):
-        """Send a command to the source."""
+    def _service_arguments(self):
+        args = ()
+        kwargs = {}
         if self._link:
-            self.hass.services.call(
+            args = (
                 REMOTE_DOMAIN,
                 SERVICE_SEND_COMMAND,
                 {
                     ATTR_DEVICE: self._link.device,
                     ATTR_COMMAND: self._link.device_command,
-                },
-                False,
-                None,
-                None,
-                {ATTR_ENTITY_ID: self._source},
+                }
             )
+            kwargs = {'blocking': True, 'target':{ATTR_ENTITY_ID: self._source}, 'context': self._context}
+        
+        return args, kwargs
+
+    def send_command(self):
+        """Send a command to the source."""
+        args, kwargs = self._service_arguments()
+        if args or kwargs:
+            self.hass.services.call(*args, **kwargs)
 
     async def async_send_command(self):
         """Send a command to the source."""
-        await self.hass.async_add_executor_job(self.send_command)
+        args, kwargs = self._service_arguments()
+        if args or kwargs:
+            await self.hass.services.async_call(*args, **kwargs)
 
     @callback
     def _async_harmony_helper_sensor_state_listener(self, event):
