@@ -1,130 +1,72 @@
 """Support for controlling harmony activity commands with a single switch."""
-from __future__ import annotations
 
 import logging
 
-import voluptuous as vol
-
-from homeassistant.components.binary_sensor import BinarySensorEntity
-from homeassistant.components.compensation.sensor import ATTR_SOURCE
-from homeassistant.components.remote import (
-    ATTR_CURRENT_ACTIVITY,
-    DOMAIN as REMOTE_DOMAIN,
-    SERVICE_SEND_COMMAND,
+from homeassistant.components.binary_sensor import (
+    BinarySensorDeviceClass,
+    BinarySensorEntity,
 )
-from homeassistant.const import (
-    ATTR_COMMAND,
-    ATTR_ENTITY_ID,
-    CONF_COMMAND,
-    CONF_DEVICE,
-    CONF_ICON,
-    CONF_NAME,
-    CONF_SOURCE,
-    STATE_OFF,
-    STATE_ON,
-)
-from homeassistant.core import callback
-from homeassistant.helpers import config_validation as cv, entity_platform
-from homeassistant.helpers.discovery import async_load_platform
+from homeassistant.components.remote import ATTR_CURRENT_ACTIVITY
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.core import Event, EventStateChangedData, HomeAssistant, callback
+from homeassistant.helpers import device_registry as dr, entity_registry as er
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.event import async_track_state_change_event
-from homeassistant.helpers.reload import async_setup_reload_service
 
-from . import (
-    CONF_ACTIVITY,
-    CONF_ACTIVITY_DEVICE_LINKS,
-    CONF_COMMANDS,
-    CONF_DEVICE_COMMAND,
-    CONF_LINK,
-    CONF_LINKS,
-    DATA_HARMONY_HELPER,
-    DEFAULT_ICON,
-    DOMAIN,
-    PLATFORMS,
-    Command,
-)
+from . import DATA_HARMONY_HELPER
+from .helpers import Command, get_harmony_remote_device_id
 
 _LOGGER = logging.getLogger(__name__)
 
-ATTR_DEVICE = "device"
 
-
-ACTIVITY_DEVICE_LINK_SCHEMA = {
-    vol.Required(CONF_ACTIVITY): str,
-    vol.Required(CONF_DEVICE): str,
-}
-
-LINK_SCHEMA = {
-    vol.Required(CONF_LINK): str,
-    vol.Optional(CONF_NAME): str,
-    vol.Optional(CONF_ICON): str,
-    vol.Optional(CONF_DEVICE_COMMAND): str,
-}
-
-COMMAND_SCHEMA = {
-    vol.Required(CONF_COMMAND): str,
-    vol.Optional(CONF_NAME): str,
-    vol.Optional(CONF_DEVICE_COMMAND): str,
-    vol.Optional(CONF_LINKS): vol.Any(str, LINK_SCHEMA),
-}
-
-HARMONY_HELPER_SCHEMA = {
-    vol.Required(CONF_SOURCE): cv.entity_domain(REMOTE_DOMAIN),
-    vol.Required(CONF_ACTIVITY_DEVICE_LINKS): {
-        str: ACTIVITY_DEVICE_LINK_SCHEMA,
-    },
-    vol.Required(CONF_COMMANDS): vol.Any(str, COMMAND_SCHEMA),
-}
-
-CONFIG_SCHEMA = vol.Schema(
-    {DOMAIN: vol.Schema({cv.slug: HARMONY_HELPER_SCHEMA})}, extra=vol.ALLOW_EXTRA
-)
-
-
-async def async_setup_platform(hass, config, async_add_entities, discovery_info=None):
-    """Set up the Compensation sensor."""
-    if discovery_info is None:
-        return
-
-    harmony_helper = discovery_info[DOMAIN]
-    conf = hass.data[DATA_HARMONY_HELPER][harmony_helper]
-
-    commands: dict[str, Command] = conf[CONF_COMMANDS]
-
-    await async_setup_reload_service(hass, DOMAIN, PLATFORMS)
-
-    source = conf[CONF_SOURCE]
-
-    async_add_entities(
-        [
-            HarmonyHelperBinarySensor(
-                f"{harmony_helper}_{command.command}",
-                f"{source} {command.command}",
-                source,
-                command,
-            )
-            for command in commands.values()
-        ]
-    )
-
-    platform = entity_platform.async_get_current_platform()
-    platform.async_register_entity_service(
-        SERVICE_SEND_COMMAND, {}, "async_send_command"
-    )
+async def async_setup_entry(
+    hass: HomeAssistant,
+    config_entry: ConfigEntry,
+    async_add_entities: AddConfigEntryEntitiesCallback,
+) -> None:
+    """Initialize config entry."""
+    entity_registry = er.async_get(hass)
+    if (config := hass.data.get(DATA_HARMONY_HELPER)) is not None:
+        async_add_entities(
+            [
+                HarmonyHelperBinarySensor(
+                    hass,
+                    item.name,
+                    f"{item.source.replace('_', ' ').replace('.', ' ').title()} Control",
+                    item.source,
+                    item.commands,
+                    get_harmony_remote_device_id(entity_registry, item.source),
+                )
+                for item in config
+            ]
+        )
 
 
 class HarmonyHelperBinarySensor(BinarySensorEntity):
-    """Representation of a harmony activity device switch."""
+    """Representation of available activity commands."""
+
+    _attr_should_poll = False
 
     def __init__(
-        self, unique_id: str, name: str, source: str, command: Command
+        self,
+        hass: HomeAssistant,
+        unique_id: str,
+        name: str,
+        source: str,
+        commands: list[Command],
+        device_id: str | None,
     ) -> None:
-        self._unique_id = unique_id
-        self._name = name
+        """Initalize."""
+        self.hass = hass
+        self._attr_unique_id = unique_id
+        self._attr_name = name
         self._source = source
-        self._command = command
-        self._state = None
-        self._link = None
-        self._icon = DEFAULT_ICON
+        self._commands = commands
+        self._attr_device_class = BinarySensorDeviceClass.RUNNING
+
+        device_registry = dr.async_get(hass)
+        if device_id is not None:
+            self.device_entry = device_registry.async_get(device_id)
 
     async def async_added_to_hass(self):
         """Handle added to Hass."""
@@ -136,83 +78,27 @@ class HarmonyHelperBinarySensor(BinarySensorEntity):
             )
         )
 
-    @property
-    def unique_id(self) -> str | None:
-        """Return the unique id of this switch."""
-        return self._unique_id
+    def _update_activity(self, activity: str | None) -> None:
+        """Update the activity and links."""
+        self._attr_is_on = False
+        if activity is None:
+            self.async_write_ha_state()
+            return
 
-    @property
-    def state(self):
-        """Return the state of the switch."""
-        return self._state
+        for command in self._commands:
+            if activity in command.links:
+                self._attr_is_on = True
+                break
 
-    @property
-    def name(self):
-        """Return the name of the switch."""
-        return self._link.name if self._link else self._name
-
-    @property
-    def should_poll(self):
-        """No polling needed."""
-        return False
-
-    @property
-    def extra_state_attributes(self):
-        """Return the state attributes of the switch."""
-        ret = {
-            ATTR_SOURCE: self._source,
-        }
-        if self._link:
-            ret[ATTR_COMMAND] = self._link.device_command
-            ret[ATTR_DEVICE] = self._link.device
-        return ret
-
-    @property
-    def icon(self):
-        """Return the icon to use in the frontend, if any."""
-        return self._link.icon if self._link else self._icon
-
-    def _service_arguments(self):
-        args = ()
-        kwargs = {}
-        if self._link:
-            args = (
-                REMOTE_DOMAIN,
-                SERVICE_SEND_COMMAND,
-                {
-                    ATTR_DEVICE: self._link.device,
-                    ATTR_COMMAND: self._link.device_command,
-                }
-            )
-            kwargs = {'blocking': True, 'target':{ATTR_ENTITY_ID: self._source}, 'context': self._context}
-        
-        return args, kwargs
-
-    def send_command(self):
-        """Send a command to the source."""
-        args, kwargs = self._service_arguments()
-        if args or kwargs:
-            self.hass.services.call(*args, **kwargs)
-
-    async def async_send_command(self):
-        """Send a command to the source."""
-        args, kwargs = self._service_arguments()
-        if args or kwargs:
-            await self.hass.services.async_call(*args, **kwargs)
+        self.async_write_ha_state()
 
     @callback
-    def _async_harmony_helper_sensor_state_listener(self, event):
+    def _async_harmony_helper_sensor_state_listener(
+        self, event: Event[EventStateChangedData]
+    ):
         """Handle sensor state changes."""
         new_state = event.data.get("new_state")
         if new_state is None:
             return
 
-        activity = new_state.attributes.get(ATTR_CURRENT_ACTIVITY, "")
-
-        if activity in self._command.links:
-            self._link = self._command.links[activity]
-            self._state = STATE_ON
-        else:
-            self._state = STATE_OFF
-
-        self.async_write_ha_state()
+        self._update_activity(new_state.attributes.get(ATTR_CURRENT_ACTIVITY))

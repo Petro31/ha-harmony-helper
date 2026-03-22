@@ -1,105 +1,181 @@
 """The harmony_helper component."""
-from __future__ import annotations
 
+from dataclasses import dataclass
 import logging
 
-from homeassistant.components.binary_sensor import DOMAIN as BINARY_SENSOR_DOMAIN
+import voluptuous as vol
+
+from homeassistant import config as conf_util
+from homeassistant.components.remote import DOMAIN as REMOTE_DOMAIN
+from homeassistant.config_entries import SOURCE_IMPORT, ConfigEntry
 from homeassistant.const import (
     CONF_COMMAND,
     CONF_DEVICE,
     CONF_ICON,
     CONF_NAME,
     CONF_SOURCE,
+    SERVICE_RELOAD,
 )
-from homeassistant.helpers.discovery import async_load_platform
+from homeassistant.core import Event, HomeAssistant, ServiceCall
+from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers.reload import async_reload_integration_platforms
+from homeassistant.helpers.service import async_register_admin_service
+from homeassistant.helpers.typing import ConfigType
+from homeassistant.loader import async_get_integration
+from homeassistant.util.hass_dict import HassKey
 
-DOMAIN = "harmony_helper"
-PLATFORMS = ["binary_sensor"]
+from .const import (
+    CONF_ACTIVITY,
+    CONF_ACTIVITY_DEVICE_LINKS,
+    CONF_COMMANDS,
+    CONF_DEVICE_COMMAND,
+    CONF_LINK,
+    CONF_LINKS,
+    DOMAIN,
+    PLATFORMS,
+    HarmonyHelperModule,
+)
+from .helpers import ActivityDeviceLink, Command, Link
 
-CONF_ACTIVITIES = "activities"
-CONF_ACTIVITY = "activity"
-CONF_ACTIVITY_DEVICE_LINKS = "activity_device_links"
-CONF_COMMANDS = "commands"
-CONF_DEVICE_COMMAND = "device_command"
-CONF_LINK = "link"
-CONF_LINKS = "links"
+DATA_MODULE: HassKey[HarmonyHelperModule] = "harmony_helper_module"
 
-DATA_HARMONY_HELPER = "harmony_helper_data"
 
-DEFAULT_ICON = "mdi:eye"
-DEFAULT_ICONS = {
-    "PowerOff": "mdi:power-off",
-    "PowerOn": "mdi:power-on",
-    "PowerToggle": "mdi:power",
-    "Mute": "mdi:volume-mute",
-    "VolumeDown": "mdi:volume-minus",
-    "VolumeUp": "mdi:volume-plus",
-    "ChannelDown": "mdi:menu-down",
-    "ChannelUp": "mdi:menu-up",
-    "DirectionDown": "mdi:arrow-down-bold",
-    "DirectionLeft": "mdi:arrow-left-bold",
-    "DirectionRight": "mdi:arrow-right-bold",
-    "DirectionUp": "mdi:arrow-up-bold",
-    "OK": "mdi:check-bold",
-    "Stop": "mdi:stop",
-    "Play": "mdi:play",
-    "Rewind": "mdi:rewind",
-    "Eject": "mdi:eject",
-    "Pause": "mdi:pause",
-    "FastForward": "mdi:fast-forward",
-    "Record": "mdi:record",
-    "SkipBack": "mdi:skip-backward",
-    "SkipForward": "mdi:skip-forward",
-    "Menu": "mdi:menu",
-    "Subtitle": "mdi:subtitles",
-    "Back": "mdi:undo-variant",
-    "Green": "mdi:rectangle",
-    "Red": "mdi:rectangle",
-    "Blue": "mdi:rectangle",
-    "Yellow": "mdi:rectangle",
-    "Info": "mdi:information",
-    "Movies": "mdi:filmstrip",
-    "Play/Pause": "mdi:play-pause",
-    "Replay": "mdi:replay",
-    "Standby": "mdi:power-standby",
-    "Search": "mdi:movie-search",
-    "Sleep": "mdi:sleep",
-    "Exit": "mdi:exit-to-app",
-    "Home": "mdi:home",
-    "Share": "mdi:share",
-    ".": "mdi:circle-small",
-    "0": "mdi:numeric-0",
-    "1": "mdi:numeric-1",
-    "2": "mdi:numeric-2",
-    "3": "mdi:numeric-3",
-    "4": "mdi:numeric-4",
-    "5": "mdi:numeric-5",
-    "6": "mdi:numeric-6",
-    "7": "mdi:numeric-7",
-    "8": "mdi:numeric-8",
-    "9": "mdi:numeric-9",
-}
+@dataclass
+class HarmonyHelperData:
+    """Harmony Helper Data."""
+
+    name: str
+    source: str
+    commands: list[Command]
+
+
+DATA_HARMONY_HELPER: HassKey[list[HarmonyHelperData]] = "harmony_helper_data"
 
 _LOGGER = logging.getLogger(__name__)
 
 
-async def async_setup(hass, config):
+ACTIVITY_DEVICE_LINK_SCHEMA = {
+    vol.Required(CONF_ACTIVITY): str,
+    vol.Required(CONF_DEVICE): str,
+}
+
+LINK_SCHEMA = {
+    vol.Required(CONF_LINK): str,
+    vol.Optional(CONF_NAME): str,
+    vol.Optional(CONF_ICON): str,
+    vol.Optional(CONF_DEVICE_COMMAND): str,
+}
+
+COMMAND_SCHEMA = {
+    vol.Required(CONF_COMMAND): str,
+    vol.Optional(CONF_NAME): str,
+    vol.Optional(CONF_DEVICE_COMMAND): str,
+    vol.Optional(CONF_ICON): str,
+    vol.Optional(CONF_LINKS): vol.Any([str, LINK_SCHEMA]),
+}
+
+HARMONY_HELPER_SCHEMA = {
+    vol.Required(CONF_SOURCE): cv.entity_domain(REMOTE_DOMAIN),
+    vol.Required(CONF_ACTIVITY_DEVICE_LINKS): {
+        str: ACTIVITY_DEVICE_LINK_SCHEMA,
+    },
+    vol.Required(CONF_COMMANDS): vol.Any([str, COMMAND_SCHEMA]),
+}
+
+CONFIG_SCHEMA = vol.Schema(
+    {DOMAIN: vol.Schema({cv.slug: HARMONY_HELPER_SCHEMA})}, extra=vol.ALLOW_EXTRA
+)
+
+
+async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     """Set up the Harmony Helper Binary Sensors."""
 
-    hass.data[DATA_HARMONY_HELPER] = {}
+    if DOMAIN not in config:
+        return True
 
-    for harmony_helper, conf in config.get(DOMAIN).items():
+    if not hass.config_entries.async_entries(DOMAIN):
+        # We avoid creating an import flow if its already
+        # setup since it will have to import the config_flow
+        # module.
+        hass.async_create_task(
+            hass.config_entries.flow.async_init(
+                DOMAIN,
+                context={"source": SOURCE_IMPORT},
+                data=config,
+            )
+        )
+
+    _process_config(hass, config[DOMAIN])
+
+    async def _reload_config(call: Event | ServiceCall) -> None:
+        try:
+            unprocessed_conf = await conf_util.async_hass_config_yaml(hass)
+        except HomeAssistantError as err:
+            _LOGGER.error(err)
+            return
+
+        integration = await async_get_integration(hass, DOMAIN)
+        conf = await conf_util.async_process_component_and_handle_errors(
+            hass, unprocessed_conf, integration
+        )
+        if conf is None:
+            return
+
+        await async_reload_integration_platforms(hass, DOMAIN, PLATFORMS)
+
+        if DOMAIN in conf:
+            _process_config(hass, conf)
+        else:
+            hass.data.pop(DATA_HARMONY_HELPER, None)
+
+        if module := hass.data.get(DATA_MODULE):
+            await hass.config_entries.async_reload(module.entry.entry_id)
+
+        hass.bus.async_fire(f"event_{DOMAIN}_reloaded", context=call.context)
+
+    async_register_admin_service(hass, DOMAIN, SERVICE_RELOAD, _reload_config)
+
+    return True
+
+
+async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """Setup a config entry."""
+
+    module: HarmonyHelperModule | None
+    if hass.data.get(DATA_HARMONY_HELPER):
+        hass.data[DATA_MODULE] = module = HarmonyHelperModule(PLATFORMS, entry)
+        await hass.config_entries.async_forward_entry_setups(entry, module.platforms)
+
+    return True
+
+
+async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """Unload a config entry."""
+    return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+
+
+def _process_config(hass: HomeAssistant, helper_config: dict[str, ConfigType]) -> None:
+    """Process Harmony Helper Config."""
+
+    hass.data.pop(DATA_HARMONY_HELPER, None)
+
+    harmony_helpers = []
+    for harmony_helper, conf in helper_config.items():
+        conf: ConfigType
         _LOGGER.debug("Setup %s.%s", DOMAIN, harmony_helper)
 
-        source = conf.get(CONF_SOURCE)
-        data = {}
+        source: str = conf.get(CONF_SOURCE)
+        commands = {}
+
+        activity_device_links_config: ConfigType = conf[CONF_ACTIVITY_DEVICE_LINKS]
 
         activity_device_links = {
             k: ActivityDeviceLink(k, v[CONF_ACTIVITY], v[CONF_DEVICE])
-            for k, v in conf[CONF_ACTIVITY_DEVICE_LINKS].items()
+            for k, v in activity_device_links_config.items()
         }
-
-        for command in conf[CONF_COMMANDS]:
+        command_config: list[str | ConfigType] = conf[CONF_COMMANDS]
+        for command in command_config:
             if isinstance(command, str):
                 helper_command = command
                 command = Command(helper_command, None, None, None)
@@ -134,7 +210,6 @@ async def async_setup(hass, config):
                             "Activity device link '%s' does not exist", link_key
                         )
                     else:
-
                         command.links[activity_device_link.activity] = Link(
                             command,
                             activity_device_link,
@@ -143,143 +218,16 @@ async def async_setup(hass, config):
                             link_dict.get(CONF_ICON),
                         )
 
-            if helper_command in data:
+            if helper_command in commands:
                 _LOGGER.warning(
                     "Command '%s' already exists, overwriting", helper_command
                 )
 
-            data[helper_command] = command
+            commands[helper_command] = command
 
-        hass.data[DATA_HARMONY_HELPER][harmony_helper] = {
-            CONF_SOURCE: source,
-            CONF_COMMANDS: data,
-        }
-
-        hass.async_create_task(
-            async_load_platform(
-                hass,
-                BINARY_SENSOR_DOMAIN,
-                DOMAIN,
-                {DOMAIN: harmony_helper},
-                config,
-            )
+        harmony_helpers.append(
+            HarmonyHelperData(harmony_helper, source, list(commands.values()))
         )
 
-    return True
-
-
-class CommandBase(object):
-    def __init__(self, name: str, device_command: str, icon: str) -> None:
-        self._name = name
-        self._device_command = device_command
-        self._icon = icon
-
-
-class Command(CommandBase):
-    def __init__(self, command: str, name: str, device_command: str, icon: str):
-        super().__init__(name, device_command, icon)
-        self._command = command
-        self._links: dict[str, Link] = {}
-
-    @property
-    def command(self) -> str:
-        """The harmony helper command."""
-        return self._command
-
-    @property
-    def name(self) -> str:
-        """The name."""
-        ret = self._name
-        if ret is None:
-            ret = self.command
-        return ret
-
-    @property
-    def device_command(self) -> str:
-        """The harmony device command."""
-        ret = self._device_command
-        if ret is None:
-            ret = self.command
-        return ret
-
-    @property
-    def icon(self) -> str:
-        """The current icon."""
-        ret = self._icon
-        if ret is None:
-            ret = DEFAULT_ICONS.get(self.device_command)
-            if ret is None:
-                ret = DEFAULT_ICON
-        return ret
-
-    @property
-    def links(self) -> dict[str, Link]:
-        """The activity device links."""
-        return self._links
-
-
-class Link(CommandBase):
-    def __init__(
-        self,
-        command: Command,
-        link: ActivityDeviceLink,
-        name: str,
-        device_command: str,
-        icon: str,
-    ):
-        super().__init__(name, device_command, icon)
-        self._link = link
-        self._command = command
-
-    @property
-    def name(self) -> str:
-        """The link name."""
-        ret = self._name
-        if ret is None:
-            ret = self._command.name
-        return ret
-
-    @property
-    def device_command(self) -> str:
-        """The link device command."""
-        ret = self._device_command
-        if ret is None:
-            ret = self._command.device_command
-        return ret
-
-    @property
-    def icon(self) -> str:
-        """The link icon."""
-        ret = self._icon
-        if ret is None:
-            ret = DEFAULT_ICONS.get(self.device_command)
-            if ret is None:
-                ret = self._command.icon
-        return ret
-
-    @property
-    def device(self) -> str:
-        """The link activity."""
-        return self._link.device
-
-
-class ActivityDeviceLink(object):
-    def __init__(self, name, activity, device) -> None:
-        self._name = name
-        self._activity = activity
-        self._device = device
-
-    @property
-    def name(self) -> str:
-        """The activity device link name."""
-        return self._name
-
-    @property
-    def device(self) -> str:
-        """The activity device link name."""
-        return self._device
-
-    @property
-    def activity(self) -> str:
-        """The activity device link name."""
-        return self._activity
+    if harmony_helpers:
+        hass.data[DATA_HARMONY_HELPER] = harmony_helpers
