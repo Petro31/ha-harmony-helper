@@ -3,9 +3,9 @@
 [![hacs_badge](https://img.shields.io/badge/HACS-Default-orange.svg?style=for-the-badge)](https://github.com/custom-components/hacs)
 <br><a href="https://www.buymeacoffee.com/Petro31" target="_blank"><img src="https://cdn.buymeacoffee.com/buttons/default-black.png" width="150px" height="35px" alt="Buy Me A Coffee" style="height: 35px !important;width: 150px !important;" ></a>
 
-Creates binary_sensors that represents separate commands.  Each command is mapped to configured harmony remote activities and devices.  This allows users to create a simple remote in lovelace by simply calling the harmony_helper.send_command service with a binary_sensor as the target.
+Creates a `binary_sensor` that represents that commands are available. This will also create `button` entites for each configured command. Each command is mapped to configured harmony remote activities and devices.  The commands will produce warnings in the logs if there is no active harmony activity or if the harmony activity does not make use of the command.  If the activity and command are configured, the button will simply send the device the configured command based on the current activity.  This essentially mimics the hand held remote buttons.
 
-The state of the binary sensor will be on/off based on the configuration.  For example, if a user has the channel up command mapped on TV and Roku activity, but not the Music activity.  The channel up binary_sensor will only be on during TV and Roku activities.
+The state of the binary sensor will be on/off based on an activity with commands.  If the activity has no commands, the binary sensor will be off.  If the activity has commands, it will be on.  This was specifically designed to hide/show buttons in a dashboard with the conditional card.
 
 <h1><a class="title-link" name="installation" href="#installation"></a>Installation</h1>
 
@@ -14,7 +14,9 @@ The state of the binary sensor will be on/off based on the configuration.  For e
 
 <h1><a class="title-link" name="configuration" href="#configuration"></a>Configuration</h1>
 
-<h3><a class="title-link" name="advanced (There is no basic configuration)" href="#advanced"></a>Basic</h3>
+<h3><a class="title-link" name="advanced" href="#advanced"></a>Advanced (There is no basic configuration)</h3>
+
+This configuration shows all options for yaml.  Sorry, I'm not going to write out a config section for this.  If you happen to find this integration, you are essentially on your own with the yaml.  Do not use this integration if you do not understand yaml or Harmony remotes in HA.
 
 ```
 harmony_helper:
@@ -136,7 +138,6 @@ harmony_helper:
         
     - command: TopButton
       name: Search
-      activities:
       links:
       - link: ps4
         device_command: Triangle
